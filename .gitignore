@@ -1,0 +1,21 @@
+# Virtual environment
+bin/
+lib/
+share/
+include/
+pyvenv.cfg
+
+# Python
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# PDFs (except sample)
+*.pdf
+
+# OS
+.DS_Store
+etc/
