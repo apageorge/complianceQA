@@ -2,7 +2,7 @@
 
 A RAG-powered assistant for financial regulatory documents. Ask natural language questions against FCA guidelines, Basel documentation, or any compliance PDF — with source citations for every answer.
 
-**[Live Demo →]()** 
+**[Live Demo →](https://complianceapp-apgeorge.streamlit.app/)** 
 
 ---
 
