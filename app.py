@@ -24,8 +24,12 @@ html, body, [class*="css"] {
 }
 
 /* Hide default streamlit chrome */
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
 .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+header {
+    background: transparent !important;
+    height: 0px;
+}
 
 /* App header */
 .app-header {
