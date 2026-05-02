@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 from src.ingestor import ingest_pdfs
-from src.chain import build_chain, ask_question
+from src.chain import build_chain, ask_question, compare_documents
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -76,6 +76,13 @@ html, body, [class*="css"] {
     margin: 0.8rem 0;
     border-radius: 0 4px 4px 0;
 }
+.msg-compare {
+    background: #141720;
+    border-left: 2px solid #9b6ec8;
+    padding: 1rem 1.2rem;
+    margin: 0.8rem 0;
+    border-radius: 0 4px 4px 0;
+}
 .msg-label {
     font-size: 0.65rem;
     letter-spacing: 0.15em;
@@ -117,6 +124,15 @@ html, body, [class*="css"] {
     font-size: 0.68rem;
     margin-right: 0.5rem;
 }
+.doc-tag {
+    display: inline-block;
+    background: #1f1a2e;
+    color: #9b6ec8;
+    padding: 0 0.4rem;
+    border-radius: 2px;
+    font-size: 0.68rem;
+    margin-right: 0.4rem;
+}
 
 /* Sidebar */
 .sidebar-section {
@@ -131,6 +147,17 @@ html, body, [class*="css"] {
     color: #5c6070;
     margin-bottom: 0.6rem;
 }
+.mode-pill {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 10px;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+}
+.mode-query { background: #1a2535; color: #4a7fa5; border: 1px solid #2a3545; }
+.mode-compare { background: #1f1a2e; color: #9b6ec8; border: 1px solid #2e2a3e; }
 
 /* Empty state */
 .empty-state {
@@ -223,6 +250,10 @@ if "doc_names" not in st.session_state:
     st.session_state.doc_names = []
 if "api_key_set" not in st.session_state:
     st.session_state.api_key_set = False
+if "selected_docs" not in st.session_state:
+    st.session_state.selected_docs = []
+if "mode" not in st.session_state:
+    st.session_state.mode = "Query"
 if "pending_question" not in st.session_state:
     st.session_state.pending_question = None
 
@@ -266,7 +297,7 @@ with st.sidebar:
         if new_names != st.session_state.doc_names:
             with st.spinner("Ingesting documents..."):
                 try:
-                    vectorstore = ingest_pdfs(uploaded_files)
+                    vectorstore, doc_names = ingest_pdfs(uploaded_files)
                     chain = build_chain(vectorstore)
                     st.session_state.vectorstore = vectorstore
                     st.session_state.chain = chain
@@ -284,6 +315,30 @@ with st.sidebar:
         st.warning("Set your API key first, then re-upload.")
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # Document selector + mode (only when 2+ docs)
+    if len(st.session_state.doc_names) >= 2:
+        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+        st.markdown('<p class="sidebar-label">Active Documents</p>', unsafe_allow_html=True)
+        selected = st.multiselect(
+            "Select documents",
+            options=st.session_state.doc_names,
+            default=st.session_state.doc_names,
+            label_visibility="collapsed"
+        )
+        st.session_state.selected_docs = selected
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<p class="sidebar-label">Mode</p>', unsafe_allow_html=True)
+        mode = st.radio(
+            "Mode", options=["Query", "Compare"],
+            index=0, label_visibility="collapsed",
+            help="Query across selected docs, or Compare two docs side by side."
+        )
+        st.session_state.mode = mode
+        if mode == "Compare":
+            st.caption("Select exactly 2 documents above.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
     # Settings
     st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
     st.markdown('<p class="sidebar-label">Retrieval Settings</p>', unsafe_allow_html=True)
@@ -301,6 +356,52 @@ with st.sidebar:
             st.session_state.messages = []
             st.rerun()
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def render_citations(sources):
+    if not sources:
+        return
+    html = '<div class="citations-block"><div class="citations-label">📚 Source references</div>'
+    for src in sources:
+        page = src.get("page", "?")
+        snippet = src.get("snippet", "")[:140].strip()
+        doc = src.get("doc", "")
+        html += f"""
+        <div class="citation-item">
+            <span class="page-tag">p.{page}</span>
+            <span class="doc-tag">{doc}</span><br>
+            <span style="padding-left:0.5rem;display:block;margin-top:0.2rem;font-size:0.73rem;">…{snippet}…</span>
+        </div>"""
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def run_query(question: str):
+    mode = st.session_state.mode
+    selected = st.session_state.selected_docs
+
+    if mode == "Compare":
+        if len(selected) != 2:
+            return "Please select exactly 2 documents in the sidebar to use Compare mode.", []
+        return compare_documents(
+            st.session_state.vectorstore,
+            question,
+            doc_a=selected[0],
+            doc_b=selected[1],
+            k=k_chunks
+        )
+    else:
+        # Only filter if user has deselected some docs
+        filter_docs = selected if selected != st.session_state.doc_names else None
+        return ask_question(
+            st.session_state.chain,
+            question,
+            st.session_state.messages[:-1],
+            k=k_chunks,
+            selected_docs=filter_docs,
+            vectorstore=st.session_state.vectorstore
+        )
+
+
 
 # ── Main area ─────────────────────────────────────────────────────────────────
 col1, col2 = st.columns([2, 1])
@@ -308,13 +409,23 @@ col1, col2 = st.columns([2, 1])
 with col1:
     # Header
     st.markdown('<div class="app-header">', unsafe_allow_html=True)
-    st.markdown('<p class="app-title">Compliance Assistant</p>', unsafe_allow_html=True)
-    if st.session_state.doc_names:
-        doc_list = " · ".join(st.session_state.doc_names)
-        st.markdown(f'<p class="app-subtitle">Querying: {doc_list}</p>', unsafe_allow_html=True)
+    is_compare = st.session_state.mode == "Compare"
+    mode_badge = (
+        '<span class="mode-pill mode-compare">⚡ Compare</span>'
+        if is_compare else
+        '<span class="mode-pill mode-query">◎ Query</span>'
+    )
+    st.markdown(f'<p class="app-title">Compliance Assistant {mode_badge}</p>', unsafe_allow_html=True)
+    if st.session_state.selected_docs:
+        doc_list = " · ".join(st.session_state.selected_docs)
+        st.markdown(f'<p class="app-subtitle">Active: {doc_list}</p>', unsafe_allow_html=True)
     else:
         st.markdown('<p class="app-subtitle">Upload regulatory documents to begin</p>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
+    
+    if is_compare and len(st.session_state.selected_docs) != 2:
+        st.warning("Compare mode needs exactly 2 documents selected in the sidebar.")
+
 
     # Chat history
     if not st.session_state.messages:
@@ -333,7 +444,7 @@ with col1:
             <div class="empty-state">
                 <span class="empty-icon">📂</span>
                 <p class="empty-text">No documents loaded</p>
-                <p class="empty-sub">Upload a regulatory PDF in the sidebar to get started.<br>
+                <p class="empty-sub">Upload regulatory PDFs in the sidebar to get started.<br>
                 Try the FCA Consumer Duty guidance or EU AI Act.</p>
             </div>
             """, unsafe_allow_html=True)
@@ -348,28 +459,14 @@ with col1:
                 </div>
                 """, unsafe_allow_html=True)
             else:
+                msg_class = "msg-compare" if msg.get("is_compare") else "msg-assistant"
+                label = "ComplianceQA · Compare" if msg.get("is_compare") else "ComplianceQA"
                 st.markdown(f"""
-                <div class="msg-assistant">
-                    <div class="msg-label">ComplianceQA</div>
+                <div class="{msg_class}">
+                    <div class="msg-label">{label}</div>
                     <div class="msg-text">{msg["content"]}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # Citations
-                if msg.get("sources"):
-                    citations_html = '<div class="citations-block"><div class="citations-label">📚 Source references</div>'
-                    for src in msg["sources"]:
-                        page = src.get("page", "?")
-                        snippet = src.get("snippet", "")[:140].strip()
-                        doc = src.get("doc", "")
-                        citations_html += f"""
-                        <div class="citation-item">
-                            <span class="page-tag">p.{page}</span>
-                            <span style="color:#4a5568; font-size:0.7rem;">{doc}</span><br>
-                            <span style="padding-left: 2.5rem; display:block; margin-top:0.2rem;">…{snippet}…</span>
-                        </div>"""
-                    citations_html += '</div>'
-                    st.markdown(citations_html, unsafe_allow_html=True)
+                </div>""", unsafe_allow_html=True)
+                render_citations(msg.get("sources", []))
 
     # Input
     # Input
@@ -386,9 +483,14 @@ with col1:
     with st.container():
         input_col, btn_col = st.columns([5, 1])
         with input_col:
+            placeholder = (
+                "What changed between the two documents?"
+                if st.session_state.mode == "Compare"
+                else "What are the board's responsibilities under the Duty?"
+            )
             st.text_input(
                 "Ask a question",
-                placeholder="What are the main obligations under Consumer Duty?",
+                placeholder=placeholder,
                 label_visibility="collapsed",
                 key="chat_input_field",
                 disabled=not bool(st.session_state.chain),
@@ -405,76 +507,104 @@ with col1:
     if st.session_state.get("pending_question") and st.session_state.chain:
         question = st.session_state.pending_question
         st.session_state.pending_question = None  # clear immediately
-
-        with st.spinner("Retrieving and reasoning..."):
+        _is_compare = st.session_state.mode == "Compare"
+        
+        with st.spinner("Comparing documents..." if _is_compare else "Retrieving and reasoning..."):
             try:
-                answer, sources = ask_question(
-                    st.session_state.chain,
-                    question,
-                    st.session_state.messages[:-1],
-                    k=k_chunks
-                )
+                answer, sources = run_query(question)
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": answer,
-                    "sources": sources
+                    "sources": sources,
+                    "is_compare": _is_compare
                 })
             except Exception as e:
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": f"Error: {e}",
-                    "sources": []
+                    "sources": [],
+                    "is_compare": False
                 })
         st.rerun()
 
 # ── Right column — suggested questions + info ─────────────────────────────────
 with col2:
-    st.markdown('<p class="suggest-label">Suggested Questions</p>', unsafe_allow_html=True)
+    current_mode = st.session_state.mode
 
-    suggested = [
-        "What are the main obligations on firms?",
-        "What does this say about conflicts of interest?",
-        "What are the requirements around customer vulnerability?",
-        "What are the penalties for non-compliance?",
-        "What governance structures are required?",
-        "What records must be kept and for how long?",
-        "How should firms handle complaints?",
-        "What are the requirements for senior management?",
-    ]
+    if current_mode == "Compare" and len(st.session_state.doc_names) >= 2:
+        st.markdown('<p class="suggest-label">Compare Questions</p>', unsafe_allow_html=True)
+        compare_questions = [
+            "How do the two documents approach board oversight?",
+            "What differences exist in consumer protection requirements?",
+            "How do the obligations on senior management differ?",
+            "What changed in requirements around vulnerable customers?",
+            "How do the documents treat conflicts of interest differently?",
+            "What requirements appear in one document but not the other?",
+        ]
+        for q in compare_questions:
+            if st.button(q, key=f"cmp_{q}", disabled=not bool(st.session_state.chain)):
+                st.session_state.messages.append({"role": "user", "content": q})
+                with st.spinner("Comparing..."):
+                    try:
+                        answer, sources = run_query(q)
+                        st.session_state.messages.append({
+                            "role": "assistant", "content": answer,
+                            "sources": sources, "is_compare": True
+                        })
+                    except Exception as e:
+                        st.session_state.messages.append({
+                            "role": "assistant", "content": f"Error: {e}",
+                            "sources": [], "is_compare": False
+                        })
+                st.rerun()
+    else:
+        
+        st.markdown('<p class="suggest-label">Suggested Questions</p>', unsafe_allow_html=True)
 
-    for q in suggested:
-        if st.button(q, key=f"suggest_{q}", disabled=not bool(st.session_state.chain)):
-            st.session_state.messages.append({"role": "user", "content": q})
-            with st.spinner("Thinking..."):
-                try:
-                    answer, sources = ask_question(
-                        st.session_state.chain,
-                        q,
-                        st.session_state.messages[:-1],
-                        k=k_chunks
-                    )
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "sources": sources
-                    })
-                except Exception as e:
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": f"Error: {e}",
-                        "sources": []
-                    })
-            st.rerun()
+        suggested = [
+            "What are the main obligations on firms?",
+            "What are the board's responsibilities under the Duty?",
+            "What are the requirements around customer vulnerability?",
+            "What does the document say about fair value?",
+            "What are the four outcomes firms must deliver?",
+            "What are the cross-cutting rules?",
+            "What records must be kept and for how long?",
+            "What are the SM&CR requirements?",
+            "What must the annual board assessment cover?",
+            "How should firms handle complaints?",
+        ]
+
+        for q in suggested:
+            if st.button(q, key=f"sug_{q}", disabled=not bool(st.session_state.chain)):
+                st.session_state.messages.append({"role": "user", "content": q})
+                with st.spinner("Thinking..."):
+                    try:
+                        answer, sources = run_query(q)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": sources,
+                            "is_compare": False
+                        })
+                    except Exception as e:
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"Error: {e}",
+                            "sources": [],
+                            "is_compare": False
+                        })
+                st.rerun()
 
     # How it works
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<p class="suggest-label">How It Works</p>', unsafe_allow_html=True)
     st.markdown("""
     <div style="font-size:0.78rem; color:#4a5060; line-height:1.8;">
-        <div style="margin-bottom:0.4rem;">① PDF → chunked into passages</div>
-        <div style="margin-bottom:0.4rem;">② Passages embedded as vectors</div>
-        <div style="margin-bottom:0.4rem;">③ Your question → top-k similar chunks retrieved</div>
-        <div style="margin-bottom:0.4rem;">④ GPT-4o-mini answers from retrieved context only</div>
-        <div>⑤ Source pages cited for every answer</div>
+        <div style="margin-bottom:0.4rem;">① PDFs chunked with per-doc tags</div>
+        <div style="margin-bottom:0.4rem;">② Embedded into ChromaDB</div>
+        <div style="margin-bottom:0.4rem;">③ Query filtered to selected docs only</div>
+        <div style="margin-bottom:0.4rem;">④ GPT-4o-mini answers from context only</div>
+        <div style="margin-bottom:0.4rem;">⑤ Compare retrieves each doc separately</div>
+        <div>⑥ Every answer cites document + page</div>
     </div>
     """, unsafe_allow_html=True)
